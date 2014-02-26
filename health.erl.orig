@@ -1,0 +1,366 @@
+-module(health).
+
+-define(DesignDocJson,"json/design.json").
+-define(DocJson,"json/audio.json").
+-define(AccountFile,"account.txt").
+-define(i2l(V), integer_to_list(V)).
+
+-include("include/couchbeam.hrl").
+
+-export([start_monitor/7]).
+
+
+start_monitor(Cluster, Account, Password, Host, Port, Prefix, Options) ->
+	S = couchbeam:server_connection(Host, Port, Prefix, Options),
+	{Mega, Sec, _} = now(),
+	Timestamp = Mega * 1000000  + Sec,
+	DbName= list_to_binary("dbtest"++integer_to_list(Timestamp)),
+	DbNameRep = list_to_binary("dbtestrep"++integer_to_list(Timestamp)),
+	DocId = << "doctest" >>,
+
+	{{Current_Year, Current_Month, Current_Day}, {Current_Hour,Current_minute,_} }=calendar:local_time(),
+	LogName="logs/"++Cluster++"_"++?i2l(Current_Year)++"-"++?i2l(Current_Month)++"-"++?i2l(Current_Day)++"_"++?i2l(Current_Hour)++"-"++?i2l(Current_minute),
+	{ok,Log}=file:open(LogName,[append]),
+
+	%% server
+	io:fwrite(Log,"...............................................................\n",[]),
+	io:fwrite(Log,"cluster:~p~nAccount:~p ~n",[Cluster,Account]),
+
+	io:fwrite(Log,"...............................................................\n",[]),
+	io:fwrite(Log,"1. GET / ~n",[]),
+	io:fwrite(Log,"\tresult : ~p \n", [ couchbeam:server_info(S) ] ),
+	io:fwrite(Log,"...............................................................\n",[]),
+	io:fwrite(Log,"2. GET /_uuids ~n",[]),
+	io:fwrite(Log,"\tresult : ~p \n", [ couchbeam:get_uuids(S,5)] ),
+	io:fwrite(Log,"...............................................................\n",[]),
+	io:fwrite(Log,"3. PUT /~p ~n",[DbName]),
+	case couchbeam:create_db(S,DbName) of
+		{ok, CreateDb}->
+			io:fwrite(Log,"\tresult : {ok, ~p} \n",[CreateDb]),
+			io:fwrite(Log,"...............................................................\n",[]),
+			%io:fwrite(Log,"GET /_all_dbs : ~p \n", [couchbeam:all_dbs(S)]),
+			{ok, DB} = couchbeam:open_db(S,DbName),
+			io:fwrite(Log,"4. GET /~p ~n",[DbName]),
+			io:fwrite(Log,"\tresult : ~p \n", [couchbeam:db_info(DB)]),
+			io:fwrite(Log,"...............................................................\n",[]),
+			io:fwrite(Log,"5. HEAD /~p ~n",[DbName]),
+			io:fwrite(Log,"\tresult : ~p \n", [couchbeam:db_exists(S,DbName)]),
+			io:fwrite(Log,"...............................................................\n",[]),
+			io:fwrite(Log,"6. PUT /~p/_revs_limit ~n",[DbName]),
+			io:fwrite(Log,"\tresult : ~p \n", [couchbeam:set_revs_limit(DB,"1000")]),
+			io:fwrite(Log,"...............................................................\n",[]),
+
+			%% db auth
+			io:fwrite(Log,"7. GET /~p/_revs_limit ~n",[DbName]),	
+			io:fwrite(Log,"\tresult: ~p \n", [couchbeam:get_revs_limit(DB)]),
+			io:fwrite(Log,"...............................................................\n",[]),
+			io:fwrite(Log,"8. PUT /~p/_security: ~n",[DbName]),
+			SecurityContent = {[{<<"readers">>, {[{<<"roles">>,[]},{<<"names">>,[<<"tim">>,<<"brain">>]}]}}]},
+			io:fwrite(Log,"\tresult : ~p \n",[couchbeam:set_db_security(DB,SecurityContent)]),
+			io:fwrite(Log,"...............................................................\n",[]),			
+			io:fwrite(Log,"9. GET /~p/_security ~n",[DbName]),
+			io:fwrite(Log,"\tresult : ~p \n", [couchbeam:get_db_security(DB)]),
+			io:fwrite(Log,"...............................................................\n",[]),
+
+			%%server auth
+			Server = couchbeam:server_connection("cloudant.com", Port, Prefix, Options),
+			io:fwrite(Log,"10. POST /api/generate_api_key ~n",[]),
+			case couchbeam:generate_api_key(Server) of
+				{ok , {AccountKey}} ->
+					Key=couchbeam_util:get_value( <<"key">>,AccountKey),
+					Pass=couchbeam_util:get_value(<<"password">>,AccountKey),
+					io:fwrite(Log,"\tresult :~p password~p \n", [Key,Pass]),
+					io:fwrite(Log,"...............................................................\n",[]),
+					io:fwrite(Log,"11. POST /api/set_permissions: ~n",[]),
+					io:fwrite(Log,"\tresult : ~p \n", [couchbeam:set_permissions(Server,binary_to_list(Key),Account,binary_to_list(DbName))]),
+					io:fwrite(Log,"...............................................................\n",[]),
+					io:fwrite(Log,"12. GET /~p/_security: ~n",[DbName]),
+					io:fwrite(Log,"\tresult : ~p \n", [couchbeam:get_db_security(DB)]),
+					io:fwrite(Log,"...............................................................\n",[]);
+				APIError ->
+					io:fwrite(Log,"\tresult : ~p \n", [APIError]),
+					io:fwrite(Log,"...............................................................\n",[])
+			end,
+			
+			io:fwrite(Log,"13. POST /_sauth: ~n",[]),
+			case couchbeam:sauth_set(S,"foo","bar,baz") of
+				{ok, {SauthResult}} ->
+					Cookie=couchbeam_util:get_value(<<"cookie">>, SauthResult),
+					io:fwrite(Log,"\tresult : ~p \n",[{ok, {SauthResult}}]),
+					io:fwrite(Log,"...............................................................\n",[]),
+					io:fwrite(Log,"14. GET /_session ~n",[]),
+					io:fwrite(Log,"\tresult : ~p \n", [couchbeam:get_session(S,{cookie,Cookie})]),
+					io:fwrite(Log,"...............................................................\n",[]);
+				SauthError ->
+					io:fwrite(Log,"\tresult : ~p \n", [SauthError]),
+					io:fwrite(Log,"...............................................................\n",[])
+			end,
+
+			revs_diff_missing(DB,Log),
+
+			%% session
+			io:fwrite(Log,"17. POST /_session ~n",[]),
+			SessionResult = couchbeam:set_session(S,Account,Password),
+			
+			case couchbeam:set_session(S,Account,Password) of
+				{ok,{SessionResult1}} ->
+					AuthSession = couchbeam_util:get_value(<<"Set-Cookie">>,SessionResult1),
+					io:fwrite(Log,"\tresult : ~p \n", [SessionResult]),
+					io:fwrite(Log,"...............................................................\n",[]),
+					io:fwrite(Log,"18. GET /_session ~n",[]),
+					io:fwrite(Log,"authsession:~p\n",[AuthSession]),
+					io:fwrite(Log,"\tresult : ~p \n", [couchbeam:get_session(S,{authsession,AuthSession})]),
+					io:fwrite(Log,"...............................................................\n",[]),
+					io:fwrite(Log,"19. DELETE /_session ~n",[]),
+					io:fwrite(Log,"\tresult : ~p \n", [couchbeam:delete_session(S,AuthSession)]),
+					io:fwrite(Log,"...............................................................\n",[]);
+				SessionError->
+					io:fwrite(Log,"\tresult : {error, ~p} \n", [SessionError])
+			end,
+
+			%% document
+			io:fwrite(Log,"20. PUT /~p/~p (create doc) ~n",[DbName,DocId]),
+			{ok,Doc} = save_doc(DB,DocId),
+			Rev=couchbeam_doc:get_rev(Doc),
+			io:fwrite(Log,"\tresult : ~p \n", [Doc]),
+			io:fwrite(Log,"...............................................................\n",[]),
+			io:fwrite(Log,"21. PUT /~p/~p (update) ~n",[DbName,DocId]),
+			{ok,DocNew} = save_doc(DB,DocId,Rev),
+			Rev1=couchbeam_doc:get_rev(DocNew),
+			io:fwrite(Log,"\tresult: ~p \n", [DocNew]),
+			io:fwrite(Log,"...............................................................\n",[]),
+			io:fwrite(Log,"22. HEAD /~p/~p (if exist) ~n",[DbName,DocId]),
+			io:fwrite(Log,"\tresult : ~p \n", [couchbeam:doc_exists(DB,DocId)]),
+			io:fwrite(Log,"...............................................................\n",[]),
+			io:fwrite(Log,"23. GET /~p/~p ~n",[DbName,DocId]),
+			io:fwrite(Log,"\tresult: ~p \n", [couchbeam:open_doc(DB, DocId)]),
+			io:fwrite(Log,"...............................................................\n",[]),
+			io:fwrite(Log,"24. HEAD /~p/~p (revs) ~n",[DbName,DocId]),
+			io:fwrite(Log,"\tresult : ~p \n", [couchbeam:lookup_doc_rev(DB,DocId)]),
+			io:fwrite(Log,"...............................................................\n",[]),
+			io:fwrite(Log,"25. PUT /~p/~p/attch1 ~n",[DbName,DocId]),
+			io:fwrite(Log,"\tresult : ~p \n",[put_attachment(DB,DocId,[{rev, Rev1}])]),
+			io:fwrite(Log,"...............................................................\n",[]),
+			io:fwrite(Log,"26. GET /~p/~p/attch1 ~n",[DbName,DocId]),
+			io:fwrite(Log,"\t result: ~p \n",[fetch_attachment(DB, DocId)]),
+			io:fwrite(Log,"...............................................................\n",[]),
+			io:fwrite(Log,"27. DELETE /~p/~p/attch1 ~n",[DbName,DocId]),
+			io:fwrite(Log,"\tresult : ~p \n",[delete_attachment(DB, DocId)]),
+			io:fwrite(Log,"...............................................................\n",[]),
+			io:fwrite(Log,"28. POST /~p/_bulk_docs ~n",[DbName]),
+			io:fwrite(Log,"\tresult : ~p \n", [save_docs(DB)]),
+			io:fwrite(Log,"...............................................................\n",[]),
+			io:fwrite(Log,"29. POST /~p (create doc) ~n",[DbName]),
+			io:fwrite(Log,"\tresult : ~p \n", [save_doc_post(DB)]),
+			io:fwrite(Log,"...............................................................\n",[]),
+			{ok,CopyDoc} = couchbeam:open_doc(DB,DocId),
+			io:fwrite(Log,"30. COPY /~p/~p~n",[DbName,DocId]),
+			io:fwrite(Log,"\tresult : ~p \n", [couchbeam:copy_doc(DB,CopyDoc,<< "copied-doc" >>)]),
+			io:fwrite(Log,"...............................................................\n",[]),
+			io:fwrite(Log,"31. GET /~p/_all_docs  ~n",[DbName]),
+			io:fwrite(Log,"\tresult: ~p \n",[couchbeam_view:fetch(DB)]),
+			io:fwrite(Log,"...............................................................\n",[]),
+			io:fwrite(Log,"32. DELETE /~p/~p  ~n",[DbName,DocId]),
+			io:fwrite(Log,"\tresult: ~p \n", [delete_doc(DB,DocId)]),
+			io:fwrite(Log,"...............................................................\n",[]),
+	
+			%% local document
+			LocalDocId = <<"doclocal1">>,
+			io:fwrite(Log,"33. PUT /~p/_local/~p \n",[DbName,LocalDocId]),
+			io:fwrite(Log,"\tresult: ~p \n", [save_local_doc(DB,LocalDocId)]),
+			io:fwrite(Log,"...............................................................\n",[]),
+			io:fwrite(Log,"34. GET /~p/_local/~p \n",[DbName,LocalDocId]),
+			{ok, CopyLocalDoc} = couchbeam:open_local_doc(DB, LocalDocId),
+			io:fwrite(Log,"\tresult : ~p \n", [CopyLocalDoc]),
+			io:fwrite(Log,"...............................................................\n",[]),
+			io:fwrite(Log,"35. COPY /~p/_local/~p \n",[DbName,LocalDocId]),
+			io:fwrite(Log,"\tresult : ~p \n", [couchbeam:copy_local_doc(DB,LocalDocId,<< "copied-local-doc" >>)]),
+			io:fwrite(Log,"...............................................................\n",[]),
+			io:fwrite(Log,"36. DELETE /~p/_local/~p \n",[DbName,LocalDocId]),
+			io:fwrite(Log,"\tresult : ~p \n", [couchbeam:delete_local_doc(DB, LocalDocId)]),
+			io:fwrite(Log,"...............................................................\n",[]),
+
+			%% design doc
+			io:fwrite(Log,"37. POST /~p/_bulk_docs (upload design and normal docs)\n",[DbName]),
+			io:fwrite(Log,"\tresult : ~p \n",[create_design_doc(DB)]),
+			io:fwrite(Log,"...............................................................\n",[]),
+			io:fwrite(Log,"38. GET /~p/_design/couchbeam \n",[DbName]),
+			io:fwrite(Log,"\tresult : ~p \n",[couchbeam:open_doc(DB, << "_design/couchbeam" >>)]),
+			io:fwrite(Log,"...............................................................\n",[]),
+			io:fwrite(Log,"39. GET /~p/_design/couchbeam/_info \n",[DbName]),
+			io:fwrite(Log,"\tresult: ~p \n",[couchbeam:design_doc_info(DB, <<"couchbeam">>)]),
+			io:fwrite(Log,"...............................................................\n",[]),
+			io:fwrite(Log,"40. GET /~p/_design/couchbeam/_view/test?startkey=\"test2\"&endkey=\"test3\" \n",[DbName]),
+			io:fwrite(Log,"\tresult : ~p \n",[couchbeam_view:fetch(DB, {"couchbeam", "test"},[{startkey,<< "test2" >>},{endkey,<< "test3" >>}])]),
+			io:fwrite(Log,"...............................................................\n",[]),
+			io:fwrite(Log,"41. POST /~p/_design/couchbeam/_view/test ~n",[DbName]),
+			io:fwrite(Log,"\tresult : ~p \n",[couchbeam_view:fetch(DB, {"couchbeam", "test"},[{method,post},{keys,[<<"test1">>,<<"test3">>]}])]),
+			io:fwrite(Log,"...............................................................\n",[]),
+			io:fwrite(Log,"42. GET /~p/_design/couchbeam/_show/detail/biking ~n",[DbName]),
+			io:fwrite(Log,"\tresult : ~p \n",[couchbeam:design_show(DB,{"couchbeam","detail","biking"})]),
+			io:fwrite(Log,"...............................................................\n",[]),
+			io:fwrite(Log,"43. GET /~p/_design/couchbeam/_search/searchvalue?q=title:cat ~n",[DbName]),
+			io:fwrite(Log,"\tresult : ~p \n",[couchbeam:design_search(DB,{"couchbeam","searchvalue"},[{q,"title:cat"}])]),
+			io:fwrite(Log,"...............................................................\n",[]),
+			io:fwrite(Log,"44. POST /~p/_view_cleanup ~n",[DbName]),
+			io:fwrite(Log,"\tresult : ~p \n",[couchbeam:view_cleanup(DB)]),
+			io:fwrite(Log,"...............................................................\n",[]),
+	
+			%% replicate
+			io:fwrite(Log,"45. POST /_replicate ~n",[]),
+			case couchbeam:replicate(S,{[{<<"source">>, DbName},{<<"target">>, DbNameRep},{<<"create_target">>, true}]}) of
+				{ok,RepResult} ->
+					io:fwrite(Log,"\tresult : {ok, ~p}\n",[RepResult]),
+					io:fwrite(Log,"...............................................................\n",[]),
+					io:fwrite(Log,"46. DELETE /~p ~n",[DbNameRep]),
+					io:fwrite(Log,"\tresult  : ~p ~n",[couchbeam:delete_db(S,DbNameRep)]);
+				RepError ->
+					io:fwrite(Log,"\tresult : ~p\n",[RepError])
+			end,
+			
+			io:fwrite(Log,"...............................................................\n",[]),
+
+			%% delete database
+			io:fwrite(Log,"47. DELETE /~p ~n",[DbName]),
+			io:fwrite(Log,"\tresult  : ~p ~n",[couchbeam:delete_db(S,DbName)]),
+			io:fwrite(Log,"...............................................................\n",[]);
+
+		CreateDbError ->
+			io:fwrite(Log,"\tresult : ~p \n", [CreateDbError])
+	end,
+	
+	file:close(Log),
+	
+	{ok, LogContent}=file:read_file(LogName),
+	LogContentList=binary_to_list(LogContent),
+	case re:run(LogContentList,"error") of
+		{match, _} ->
+			%%send mail
+			io:format("error occured in ~p !!! ~n",[Cluster]),
+			simple_smtp_sender:send("luojinglp@gmail.com", "jing88.luo@samsung.com", "error occured in "++LogName, LogContentList),
+			simple_smtp_sender:send("binbinwang118@gmail.com", "jing88.luo@samsung.com", "error occured in "++LogName, LogContentList),
+			simple_smtp_sender:send("bk21.kwak@samsung.com", "jing88.luo@samsung.com", "error occured in "++LogName, LogContentList),
+			simple_smtp_sender:send("jw_.kim@samsung.com", "jing88.luo@samsung.com", "error occured in "++LogName, LogContentList),
+			simple_smtp_sender:send("breezjw@gmail.com", "jing88.luo@samsung.com", "error occured in "++LogName, LogContentList),
+			simple_smtp_sender:send("jing88.luo@samsung.com", "jing88.luo@samsung.com", "error occured in "++LogName, LogContentList);
+		nomatch->
+			io:format("no errors in ~p !!! ~n",[Cluster]),
+			ok
+	end.
+
+get_time() ->
+    {Mega, Sec, Micro} = now(),
+    Timestamp = Mega * 1000000 + Sec,
+    {{Y,M,D},{H,Mi,S}}=calendar:now_to_datetime({Mega, Sec, Micro}),
+    {Timestamp, list_to_binary(integer_to_list(Y)++"-"++integer_to_list(M)++"-"++integer_to_list(D)++" "++
+        integer_to_list(H)++":"++integer_to_list(Mi)++":"++integer_to_list(S))}.
+
+save_doc(Db,DocId) ->
+	{ok,Data}=file:read_file(?DocJson),
+	Doc=couchbeam_ejson:decode(Data),
+	NewDoc=couchbeam_doc:extend({<<"_id">>, DocId},Doc),
+	couchbeam:save_doc(Db,NewDoc).
+
+save_local_doc(Db,DocId) ->
+	{ok,Data}=file:read_file(?DocJson),
+	Doc=couchbeam_ejson:decode(Data),
+	NewDoc=couchbeam_doc:extend({<<"_id">>, DocId},Doc),
+	couchbeam:save_local_doc(Db,NewDoc).
+	
+save_doc(Db,DocId,Rev) ->
+	{ok,Data}=file:read_file(?DocJson),
+	Doc=couchbeam_ejson:decode(Data),
+	
+	Doc1=couchbeam_doc:extend({<< "_id" >>, DocId},Doc),
+	{Timestamp,Timestamp_GMT} = get_time(),
+	Doc2=couchbeam_doc:set_value(<< "timestamp" >>,Timestamp,Doc1),
+	Doc3=couchbeam_doc:set_value(<< "timestamp_GMT" >>,Timestamp_GMT,Doc2),
+	NewDoc=couchbeam_doc:extend({<< "_rev" >>, Rev},Doc3),
+
+	couchbeam:save_doc(Db,NewDoc).
+
+save_doc_post(DB) ->
+	{ok,Data}=file:read_file(?DocJson),
+	Doc=couchbeam_ejson:decode(Data),
+	couchbeam:save_doc(DB,Doc).
+
+delete_doc(DB, DocId) ->
+	{ok, Doc}=couchbeam:open_doc(DB,DocId),
+	couchbeam:delete_doc(DB, Doc).
+
+save_docs(DB) ->
+	{ok,Data}=file:read_file(?DocJson),
+	Doc=couchbeam_ejson:decode(Data),
+	Doc1=couchbeam_doc:extend({<< "_id" >>, << "bulkdoc1" >>},Doc),
+	Doc2=couchbeam_doc:extend({<< "_id" >>, << "bulkdoc2" >>},Doc),
+	Doc3=couchbeam_doc:extend({<< "_id" >>, << "bulkdoc3" >>},Doc),
+	Doc4=couchbeam_doc:extend({<< "_id" >>, << "bulkdoc4" >>},Doc),
+
+	Docs=[Doc1,Doc2,Doc3,Doc4],
+	couchbeam:save_docs(DB,Docs).
+
+
+put_attachment(DB,DocId,Options) ->
+	Name="attch1",
+	Body="Hello world, doc content!!!!!!",
+	couchbeam:put_attachment(DB,DocId,Name,Body,Options).
+
+fetch_attachment(DB, DocId) ->
+	Name="attch1",
+	couchbeam:fetch_attachment(DB, DocId, Name).
+
+delete_attachment(DB, DocId) ->
+	{ok, Doc}=couchbeam:open_doc(DB,DocId),
+	Name="attch1",
+	couchbeam:delete_attachment(DB, Doc, Name).
+
+create_design_doc(DB) ->
+    {ok,Data}=file:read_file(?DesignDocJson),
+	DesignDoc=couchbeam_ejson:decode(Data),
+	%% prepare docs for design doc usage.
+	Docs = [
+        {[{<< "_id" >>, << "test1" >>}, {<< "type" >>, << "test" >>}, {<< "value" >>, 1},{<< "nation" >>, << "Korea" >>}]},
+        {[{<< "_id" >>, << "test2" >>}, {<< "type" >>, << "test" >>}, {<< "value" >>, 2},{<< "nation" >>, << "China" >>}]},
+        {[{<< "_id" >>, << "test3" >>}, {<< "type" >>, << "test" >>}, {<< "value" >>, 3},{<< "nation" >>, << "Korea" >>}]},
+        {[{<< "_id" >>, << "test4" >>}, {<< "type" >>, << "test" >>}, {<< "value" >>, 4},{<< "nation" >>, << "China" >>}]},
+        {[{<<"_id">>,<<"biking">>},{<<"body">>,<<"My biggest hobby is mountainbiking. The other day...">>},{<<"date">>,<<"2009/01/30 18:00:00">>}, {<<"title">>,<<"Biking">>}]},
+    	{[{<<"_id">>,<<"bought-a-cat">>},{<<"body">>,<<"I went to the pet store earlier and brought home a little kitty...">>},{<<"date">>,<<"2009/02/17 21:12:39">>},{<<"title">>,<<"Bought a Cat">>}]},
+    	{[{<<"_id">>,<<"hello-world">>},{<<"body">>,<<"Well hello and welcome to my new blog...">>},{<<"date">>,<<"2009/01/15 15:52:20">>},{<<"title">>,<<"Hello World">>}]} 
+	],
+	couchbeam:save_docs(DB,[DesignDoc|Docs]).
+	
+revs_diff_missing(DB,Log) ->
+	Doc = {[{<<"season">>,<<"summer">>},{<<"weather">>,<<"usually warm and sunny">>}]},
+	%% docdif1
+	Doc1 = couchbeam_doc:extend({<< "_id" >>, <<"docdif1">>},Doc),
+	
+	{ok,Result1}=couchbeam:save_doc(DB,Doc1),
+	Rev1=couchbeam_doc:get_rev(Result1),
+	
+	Doc11 = couchbeam_doc:extend({<< "update" >>, <<1>>},Doc1),
+	Doc111 = couchbeam_doc:extend({<<"_rev">>,Rev1},Doc11),
+	{ok,Result2}=couchbeam:save_doc(DB,Doc111),
+	Rev2=couchbeam_doc:get_rev(Result2),
+	
+	Doc122 = couchbeam_doc:extend({<< "update" >>, <<2>>},Doc1),
+	Doc1222 = couchbeam_doc:extend({<<"_rev">>,Rev2},Doc122),
+	{ok,Result3}=couchbeam:save_doc(DB,Doc1222),
+	Rev3=couchbeam_doc:get_rev(Result3),
+	
+	%% docdif2
+	Doc2 = couchbeam_doc:extend({<< "_id" >>, <<"docdif2">>},Doc),
+	{ok,Result4}=couchbeam:save_doc(DB,Doc2),
+	Rev4=couchbeam_doc:get_rev(Result4),
+	
+	%DocRevs = {[{<<"docdif1">>,{[Rev1,Rev2,Rev3]}},{<<"docdif2">>,{[Rev4]}}]},
+	DocRevs = {[{<<"docdif1">>,[Rev1,Rev2,<<"4-xxx">>]}, {<<"docdif2">>,[Rev4]}]},
+	io:fwrite(Log,"15. POST /~p/_revs_diff ~n",[DB#db.name]),  
+	io:fwrite(Log,"\tresult : ~p \n",[couchbeam:revs_diff(DB,DocRevs)] ),
+	io:fwrite(Log,"...............................................................\n",[]),
+
+	%%missing_revs
+	DocRevs1={[{<<"docdif1">>,[Rev1,Rev2,Rev3,<<"4-xxx">>]}, {<<"docdif2">>,[Rev4,<<"2-xxx">>]}]},
+	io:fwrite(Log,"16. POST /~p/_missing_revs ~n",[DB#db.name]),
+	io:fwrite(Log,"\tresult : ~p \n",[couchbeam:missing_revs(DB,DocRevs1)] ),
+	io:fwrite(Log,"...............................................................\n",[]).
+

@@ -1,0 +1,20 @@
+{
+   "_id":"_design/couchbeam",
+   "language":"javascript",
+   "views":{
+      "test":{
+         "map":"function (doc) {\n if (doc.type == \"test\") {\n emit(doc._id, doc);\n}\n}"
+      },
+      "test2":{
+         "map":"function (doc) {\n if (doc.type == \"test2\"){\n emit(doc._id, null);\n}\n}"
+      }
+   },
+   "shows": {
+       "detail": "function(doc, req){\n  return doc.title+'<-detail->'+doc.body}"
+   },
+   "indexes": {
+        "searchvalue": {
+            "index": "function(doc) { if(doc.title){ index(\"title\",doc.title,{\"store\":\"yes\"});} if(doc.body){ index(\"body\",doc.body,{\"store\":\"yes\"});} if(doc.date){ index(\"date\",doc.date,{\"store\":\"yes\"});}}"
+          }
+    }
+}

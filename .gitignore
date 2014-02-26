@@ -1,0 +1,4 @@
+account.txt
+ebin/*
+*.beam
+deps/*

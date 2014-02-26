@@ -1,0 +1,23 @@
+{
+   "version":"0.62",
+   "type":"audio",
+   "doc_number":4,
+   "timestamp":1362580120,
+   "timestamp_GMT":"20130603 14:28:40   ",
+   "meta_data":{
+      "displayname":"004 Ke$ha Die Young.mp3",
+      "date_added":1362652037,
+      "date_added_GMT":"20130703 10:27:17",
+      "date_modified ":1362580120,
+      "date_modified_GMT":"20130603 14:28:40",
+      "uri":"content://media/external/audio/media/4",
+      "title":"Die Young",
+      "filesize":3145728,
+      "album":"Billboard Hot 100: 11102012",
+      "artist":"Ke$ha",
+      "track":4,
+      "year":2012,
+      "duration":213160,
+      "genre":"hiphop"
+   }
+}
